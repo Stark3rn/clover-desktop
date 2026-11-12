@@ -1,29 +1,63 @@
 # ==============================================================================
 # Script d'installation modulaire Windows (Scoop + WinGet)
+#
+# À lancer dans un terminal NORMAL (pas administrateur) : Scoop et plusieurs
+# applis (Rio, Claude Code...) refusent de s'installer en admin. Seul le module
+# Unbloat a besoin de droits élevés : il s'exécute dans une fenêtre séparée qui
+# demande l'élévation (UAC) au moment voulu.
 # ==============================================================================
 
-# Vérification des droits administrateur (requis pour certains unbloats / winget)
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Relance du script en mode Administrateur..." -ForegroundColor Yellow
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    Exit
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    Write-Host "[!] Ce script ne doit pas être lancé en administrateur." -ForegroundColor Red
+    Write-Host "    Scoop et certaines applis refusent de s'installer dans un terminal élevé." -ForegroundColor Red
+    Write-Host "    Ouvre un terminal PowerShell normal et relance le script." -ForegroundColor Red
+    Read-Host "Appuyez sur Entrée pour quitter..."
+    Exit 1
 }
 
 Clear-Host
 Write-Host "=== CONFIGURATION INITIALE WINDOWS ===" -ForegroundColor Cyan
 
+# 0. Autoriser l'exécution de scripts de façon permanente pour l'utilisateur courant
+try {
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+} catch {
+    Write-Host "[!] Impossible de modifier l'ExecutionPolicy (stratégie imposée ?) : $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# Liste des paquets qui ont échoué, affichée à la fin
+$script:Failures = @()
+
+function Install-ScoopApps {
+    param([string[]]$Packages)
+    foreach ($pkg in $Packages) {
+        $name = $pkg.Split('/')[-1]
+        scoop install $pkg
+        $installed = $false
+        try { $installed = [bool](scoop list | Where-Object { $_.Name -eq $name }) } catch {}
+        if (-not $installed) { $script:Failures += "scoop : $pkg" }
+    }
+}
+
+function Install-WingetApp {
+    param([string]$Id)
+    winget install --id $Id -e --accept-source-agreements --accept-package-agreements
+    # 0 = installé, -1978335189 = déjà installé / aucune mise à jour applicable
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) { $script:Failures += "winget : $Id" }
+}
+
 # 1. Installation de Scoop si absent
 if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
     Write-Host "[*] Installation de Scoop..." -ForegroundColor Green
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
     Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
 }
 
 Write-Host "[*] Ajout des buckets Scoop..." -ForegroundColor Green
+scoop install git 2>$null
 scoop bucket add extras 2>$null
 scoop bucket add versions 2>$null
 scoop bucket add nerd-fonts 2>$null
-scoop install git 2>$null
 
 # ==============================================================================
 # MENU DE SÉLECTION DES MODULES
@@ -36,7 +70,7 @@ $modules = @(
     @{ Name = "Corporate (Teams)"; Selected = $false },
     @{ Name = "Music (ASIO4ALL)"; Selected = $false },
     @{ Name = "Ricing (GlazeWM, Zebar, Flow Launcher)"; Selected = $true },
-    @{ Name = "Unbloat & Privacy (Suppression Edge/Copilot/OneDrive)"; Selected = $false }
+    @{ Name = "Unbloat & Privacy (Suppression Edge/Copilot/OneDrive, demande l'élévation UAC)"; Selected = $false }
 )
 
 for ($i = 0; $i -lt $modules.Count; $i++) {
@@ -47,7 +81,7 @@ for ($i = 0; $i -lt $modules.Count; $i++) {
 $choix = Read-Host "`nEntrez les numéros des modules à installer séparés par des espaces (ex: 1 2 6) ou appuyez sur Entrée pour la sélection par défaut"
 if (-not [string]::IsNullOrWhiteSpace($choix)) {
     for ($i = 0; $i -lt $modules.Count; $i++) { $modules[$i].Selected = $false }
-    foreach ($c in $choix.Split(' ')) {
+    foreach ($c in $choix.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) {
         $idx = [int]$c - 1
         if ($idx -ge 0 -and $idx -lt $modules.Count) { $modules[$idx].Selected = $true }
     }
@@ -59,13 +93,24 @@ if (-not [string]::IsNullOrWhiteSpace($choix)) {
 
 if ($modules[0].Selected) {
     Write-Host "`n--- Installation du module CORE / GENERAL ---" -ForegroundColor Yellow
-    scoop install extras/zen-browser extras/notion extras/simplenote extras/spotify extras/audacity extras/onlyoffice-desktopeditors extras/draw.io extras/localsend extras/vlc extras/peazip extras/rio main/starship main/nu main/ripgrep main/bat nerd-fonts/JetBrainsMono-NF
+    Install-ScoopApps @(
+        "extras/zen-browser", "extras/notion", "extras/simplenote", "extras/spotify",
+        "extras/audacity", "extras/onlyoffice-desktopeditors", "extras/draw.io",
+        "extras/localsend", "extras/vlc", "extras/peazip", "extras/rio",
+        "main/starship", "main/nu", "main/ripgrep", "main/bat",
+        "nerd-fonts/JetBrainsMono-NF"
+    )
 }
 
 if ($modules[1].Selected) {
     Write-Host "`n--- Installation du module DEV / SECOPS ---" -ForegroundColor Yellow
-    scoop install main/git main/python main/nodejs-lts main/rustup main/terraform main/tflint main/kubectl main/k3d main/helm main/helmfile main/azure-cli main/trivy main/k9s main/stern extras/bruno extras/zed extras/lazygit
-    
+    Install-ScoopApps @(
+        "main/git", "main/python", "main/nodejs-lts", "main/rustup", "main/terraform",
+        "main/tflint", "main/kubectl", "main/k3d", "main/helm", "main/helmfile",
+        "main/azure-cli", "main/trivy", "main/k9s", "main/stern",
+        "extras/bruno", "extras/zed", "extras/lazygit"
+    )
+
     # Mise à jour propre de pip sur l'unique instance Python Scoop
     python -m pip install --upgrade pip
 
@@ -89,28 +134,30 @@ if ($modules[1].Selected) {
         Write-Host "[!] $zedSettings existe déjà : ajoutez-y `"tab_size`": 2 à la main." -ForegroundColor Yellow
     }
 
-    winget install --id RedHat.Podman-Desktop -e --accept-source-agreements --accept-package-agreements
-    winget install --id Anthropic.ClaudeCode -e --accept-source-agreements --accept-package-agreements
+    # Podman Desktop demande lui-même l'élévation (UAC) si son installeur en a besoin
+    Install-WingetApp "RedHat.Podman-Desktop"
+    Install-WingetApp "Anthropic.ClaudeCode"
 }
 
 if ($modules[2].Selected) {
     Write-Host "`n--- Installation du module GAMING ---" -ForegroundColor Yellow
-    scoop install extras/steam extras/discord
+    Install-ScoopApps @("extras/steam", "extras/discord")
 }
 
 if ($modules[3].Selected) {
     Write-Host "`n--- Installation du module CORPORATE ---" -ForegroundColor Yellow
-    winget install --id Microsoft.Teams -e --accept-source-agreements --accept-package-agreements
+    Install-WingetApp "Microsoft.Teams"
 }
 
 if ($modules[4].Selected) {
     Write-Host "`n--- Installation du module MUSIC ---" -ForegroundColor Yellow
-    scoop install extras/asio4all
+    # L'installeur d'ASIO4ALL peut réclamer l'élévation ; en cas d'échec, voir le récapitulatif final
+    Install-ScoopApps @("extras/asio4all")
 }
 
 if ($modules[5].Selected) {
     Write-Host "`n--- Installation du module RICING ---" -ForegroundColor Yellow
-    scoop install extras/flow-launcher extras/glazewm extras/zebar
+    Install-ScoopApps @("extras/flow-launcher", "extras/glazewm", "extras/zebar")
 
     # GlazeWM : raccourcis identiques à ceux de Fedora (Super = touche Windows)
     $glazeDir = "$env:USERPROFILE\.glzr\glazewm"
@@ -157,24 +204,39 @@ $workspaceBinds
 
 if ($modules[6].Selected) {
     Write-Host "`n--- Application des scripts d'UNBLOAT ---" -ForegroundColor Yellow
-    
-    # Suppression OneDrive
-    Write-Host "Suppression de OneDrive..."
-    taskkill /f /im OneDrive.exe 2>$null
-    & "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" /uninstall 2>$null
 
-    # Désactivation Copilot (Registre)
-    Write-Host "Désactivation de Copilot..."
+    # Réglages utilisateur (HKCU) : pas besoin de droits admin
+    Write-Host "Désactivation de Copilot et des widgets (utilisateur)..."
     reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f
-    reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f
-
-    # Télémétrie & Widgets
-    Write-Host "Désactivation de la télémétrie et des widgets..."
-    reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" /v DisableLocation /t REG_DWORD /d 1 /f
     reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarDa /t REG_DWORD /d 0 /f
 
-    Write-Host "Pour un unbloat plus poussé (Edge, etc.), lancement de l'utilitaire Chris Titus Tech..." -ForegroundColor Cyan
-    iwr -useb https://christitus.com/win | iex
+    # Réglages machine (HKLM), OneDrive et utilitaire Chris Titus : dans une fenêtre élevée
+    $unbloatScript = @'
+Write-Host "=== UNBLOAT (administrateur) ===" -ForegroundColor Cyan
+
+Write-Host "Suppression de OneDrive..."
+taskkill /f /im OneDrive.exe 2>$null
+$oneDriveSetup = if (Test-Path "$env:SystemRoot\SysWOW64\OneDriveSetup.exe") { "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" } else { "$env:SystemRoot\System32\OneDriveSetup.exe" }
+& $oneDriveSetup /uninstall 2>$null
+
+Write-Host "Désactivation de Copilot, de la télémétrie et de la localisation (machine)..."
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" /v DisableLocation /t REG_DWORD /d 1 /f
+
+Write-Host "Pour un unbloat plus poussé (Edge, etc.), lancement de l'utilitaire Chris Titus Tech..." -ForegroundColor Cyan
+iwr -useb https://christitus.com/win | iex
+'@
+    $unbloatPath = Join-Path $env:TEMP "drainda-unbloat.ps1"
+    Set-Content -Path $unbloatPath -Value $unbloatScript -Encoding utf8
+    try {
+        Write-Host "Une fenêtre administrateur va s'ouvrir (validation UAC requise)..." -ForegroundColor Cyan
+        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$unbloatPath`"" -Verb RunAs -Wait
+    } catch {
+        Write-Host "[!] Élévation refusée ou impossible : l'unbloat machine n'a pas été appliqué." -ForegroundColor Yellow
+        $script:Failures += "unbloat : partie administrateur non exécutée"
+    } finally {
+        Remove-Item $unbloatPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ==============================================================================
@@ -186,7 +248,7 @@ if ($modules[0].Selected) {
     # 1. Rio : définir Nushell comme shell par défaut et JetBrainsMono Nerd Font
     $rioDir = "$env:LOCALAPPDATA\rio"
     if (-not (Test-Path $rioDir)) { New-Item -ItemType Directory -Path $rioDir -Force | Out-Null }
-    
+
     $rioConfig = @"
 [shell]
 program = "nu"
@@ -210,8 +272,21 @@ size = 14
 `$env.config.show_banner = false
 use ~/.cache/starship/init.nu
 "@
-    Add-Content -Path "$nuDir\config.nu" -Value $nuConfig -Encoding utf8
+    $nuConfigPath = "$nuDir\config.nu"
+    # Évite de dupliquer les lignes si le script est relancé
+    if (-not (Test-Path $nuConfigPath) -or -not (Select-String -Path $nuConfigPath -Pattern "starship/init.nu" -Quiet)) {
+        Add-Content -Path $nuConfigPath -Value $nuConfig -Encoding utf8
+    }
 }
 
-Write-Host "`n=== INSTALLATION TERMINÉE AVEC SUCCÈS ! ===" -ForegroundColor Green
+# ==============================================================================
+# RÉCAPITULATIF
+# ==============================================================================
+if ($script:Failures.Count -gt 0) {
+    Write-Host "`n=== TERMINÉ, MAIS CERTAINS ÉLÉMENTS ONT ÉCHOUÉ ===" -ForegroundColor Yellow
+    $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Yellow }
+    Write-Host "Relance l'installation de ces éléments à la main (certains installeurs demandent l'élévation)." -ForegroundColor Yellow
+} else {
+    Write-Host "`n=== INSTALLATION TERMINÉE AVEC SUCCÈS ! ===" -ForegroundColor Green
+}
 Read-Host "Appuyez sur Entrée pour quitter..."
