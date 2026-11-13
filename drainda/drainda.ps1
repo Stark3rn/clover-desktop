@@ -29,6 +29,40 @@ try {
 # Liste des paquets qui ont échoué, affichée à la fin
 $script:Failures = @()
 
+# Écrit un fichier en UTF-8 SANS BOM et avec des fins de ligne LF.
+# Windows PowerShell 5.1 ajoute un BOM avec "-Encoding utf8", ce qui fait échouer
+# les parseurs stricts (Zed/JSON, GlazeWM/YAML, Rio/TOML, Nushell).
+function Write-ConfigFile {
+    param([string]$Path, [string]$Content, [switch]$Append)
+    $text = $Content -replace "`r`n", "`n"
+    if (-not $text.EndsWith("`n")) { $text += "`n" }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    if ($Append) { [System.IO.File]::AppendAllText($Path, $text, $enc) }
+    else { [System.IO.File]::WriteAllText($Path, $text, $enc) }
+}
+
+# Les fichiers de config du dépôt vivent dans dotfiles/ (à la racine du dépôt)
+$DotfilesDir = Join-Path (Split-Path $PSScriptRoot -Parent) "dotfiles"
+
+# Copie un fichier de dotfiles/ vers sa destination. Si une config différente existe
+# déjà, elle est sauvegardée à côté (.bak-horodatage) avant d'être remplacée.
+function Install-Dotfile {
+    param([string]$Source, [string]$Target)
+    $src = Join-Path $DotfilesDir $Source
+    if (-not (Test-Path $src)) {
+        Write-Host "[!] Dotfile introuvable : $src" -ForegroundColor Yellow
+        $script:Failures += "dotfile : $Source"
+        return
+    }
+    $dir = Split-Path $Target -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    if ((Test-Path $Target) -and ((Get-FileHash $Target).Hash -ne (Get-FileHash $src).Hash)) {
+        Copy-Item $Target "$Target.bak-$(Get-Date -Format yyyyMMdd-HHmmss)" -Force
+    }
+    Copy-Item $src $Target -Force
+    Write-Host "[*] Config appliquée : $Target" -ForegroundColor Green
+}
+
 function Install-ScoopApps {
     param([string[]]$Packages)
     foreach ($pkg in $Packages) {
@@ -64,7 +98,7 @@ scoop bucket add nerd-fonts 2>$null
 # ==============================================================================
 Write-Host "`nQuels modules souhaitez-vous installer ?" -ForegroundColor Cyan
 $modules = @(
-    @{ Name = "Core / General (Navigateur, Simplenote, Outils CLI/GUI...)"; Selected = $true },
+    @{ Name = "Core / General (Navigateur, Outils CLI/GUI, Visual C++ Redistributable...)"; Selected = $true },
     @{ Name = "Dev / SecOps (Python, Node, Rust, K3d, Helm, Azure, Trivy, K9s, Stern, TFLint...)"; Selected = $true },
     @{ Name = "Gaming (Steam, Discord)"; Selected = $false },
     @{ Name = "Corporate (Teams)"; Selected = $false },
@@ -93,8 +127,12 @@ if (-not [string]::IsNullOrWhiteSpace($choix)) {
 
 if ($modules[0].Selected) {
     Write-Host "`n--- Installation du module CORE / GENERAL ---" -ForegroundColor Yellow
+    # Runtime Visual C++ (MSVCP140.dll...) : indispensable pour Rio et beaucoup d'applis.
+    # L'installeur demande lui-même la validation UAC.
+    Install-WingetApp "Microsoft.VCRedist.2015+.x64"
+
     Install-ScoopApps @(
-        "extras/zen-browser", "extras/notion", "extras/simplenote", "extras/spotify",
+        "extras/zen-browser", "extras/notion", "extras/spotify",
         "extras/audacity", "extras/onlyoffice-desktopeditors", "extras/draw.io",
         "extras/localsend", "extras/vlc", "extras/peazip", "extras/rio",
         "main/starship", "main/nu", "main/ripgrep", "main/bat",
@@ -114,25 +152,8 @@ if ($modules[1].Selected) {
     # Mise à jour propre de pip sur l'unique instance Python Scoop
     python -m pip install --upgrade pip
 
-    # Zed : indentation sur 2 espaces (ne touche pas à une config existante)
-    $zedDir = "$env:APPDATA\Zed"
-    $zedSettings = "$zedDir\settings.json"
-    if (-not (Test-Path $zedDir)) { New-Item -ItemType Directory -Path $zedDir -Force | Out-Null }
-    if (-not (Test-Path $zedSettings)) {
-        $zedConfig = @"
-{
-  "tab_size": 2,
-  "hard_tabs": false,
-  "languages": {
-    "Python": { "tab_size": 2, "hard_tabs": false },
-    "Rust": { "tab_size": 2, "hard_tabs": false }
-  }
-}
-"@
-        Set-Content -Path $zedSettings -Value $zedConfig -Encoding utf8
-    } else {
-        Write-Host "[!] $zedSettings existe déjà : ajoutez-y `"tab_size`": 2 à la main." -ForegroundColor Yellow
-    }
+    # Zed : config versionnée dans dotfiles/zed
+    Install-Dotfile -Source "zed\settings.json" -Target "$env:APPDATA\Zed\settings.json"
 
     # Podman Desktop demande lui-même l'élévation (UAC) si son installeur en a besoin
     Install-WingetApp "RedHat.Podman-Desktop"
@@ -163,7 +184,12 @@ if ($modules[5].Selected) {
     $glazeDir = "$env:USERPROFILE\.glzr\glazewm"
     $glazeConfig = "$glazeDir\config.yaml"
     if (-not (Test-Path $glazeDir)) { New-Item -ItemType Directory -Path $glazeDir -Force | Out-Null }
-    if (Test-Path $glazeConfig) { Copy-Item $glazeConfig "$glazeConfig.bak" -Force }
+    if (Test-Path $glazeConfig) {
+        # Sauvegarde hors du dossier de GlazeWM, pour ne pas y laisser de fichier en trop
+        $backupDir = "$env:USERPROFILE\.glzr\backups"
+        if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
+        Copy-Item $glazeConfig "$backupDir\glazewm-config-$(Get-Date -Format yyyyMMdd-HHmmss).yaml" -Force
+    }
 
     $workspaces = (1..9 | ForEach-Object { "  - name: `"$_`"" }) -join "`n"
     $workspaceBinds = (1..9 | ForEach-Object {
@@ -199,7 +225,7 @@ keybindings:
   # Super + [1-9] / Super + Shift + [1-9] : espaces de travail
 $workspaceBinds
 "@
-    Set-Content -Path $glazeConfig -Value $glazeYaml -Encoding utf8
+    Write-ConfigFile -Path $glazeConfig -Content $glazeYaml
 }
 
 if ($modules[6].Selected) {
@@ -258,7 +284,7 @@ args = []
 family = "JetBrainsMono Nerd Font"
 size = 14
 "@
-    Set-Content -Path "$rioDir\config.toml" -Value $rioConfig -Encoding utf8
+    Write-ConfigFile -Path "$rioDir\config.toml" -Content $rioConfig
 
     # 2. Nushell : initialiser Starship et désactiver la bannière de bienvenue
     $nuDir = "$env:APPDATA\nushell"
@@ -266,7 +292,7 @@ size = 14
 
     $starshipInitDir = "$env:USERPROFILE\.cache\starship"
     if (-not (Test-Path $starshipInitDir)) { New-Item -ItemType Directory -Path $starshipInitDir -Force | Out-Null }
-    starship init nu | Out-File -FilePath "$starshipInitDir\init.nu" -Encoding utf8
+    Write-ConfigFile -Path "$starshipInitDir\init.nu" -Content ((starship init nu) -join "`n")
 
     $nuConfig = @"
 `$env.config.show_banner = false
@@ -275,7 +301,7 @@ use ~/.cache/starship/init.nu
     $nuConfigPath = "$nuDir\config.nu"
     # Évite de dupliquer les lignes si le script est relancé
     if (-not (Test-Path $nuConfigPath) -or -not (Select-String -Path $nuConfigPath -Pattern "starship/init.nu" -Quiet)) {
-        Add-Content -Path $nuConfigPath -Value $nuConfig -Encoding utf8
+        Write-ConfigFile -Path $nuConfigPath -Content $nuConfig -Append
     }
 }
 

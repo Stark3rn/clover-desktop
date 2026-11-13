@@ -11,6 +11,25 @@ if [ "$EUID" -eq 0 ]; then
   exit 1
 fi
 
+# Les fichiers de config du dépôt vivent dans dotfiles/ (à la racine du dépôt)
+DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles"
+
+# Copie dotfiles/<source> vers <cible>. Si une config différente existe déjà,
+# elle est sauvegardée à côté (.bak-horodatage) avant d'être remplacée.
+install_dotfile() {
+  local src="$DOTFILES_DIR/$1" target="$2"
+  if [ ! -f "$src" ]; then
+    echo "[!] Dotfile introuvable : $src"
+    return 0
+  fi
+  mkdir -p "$(dirname "$target")"
+  if [ -f "$target" ] && ! cmp -s "$src" "$target"; then
+    cp "$target" "$target.bak-$(date +%Y%m%d-%H%M%S)"
+  fi
+  cp "$src" "$target"
+  echo "[*] Config appliquée : $target"
+}
+
 clear
 echo "=== CONFIGURATION INITIALE FEDORA EVERYTHING ==="
 
@@ -38,7 +57,7 @@ fi
 echo ""
 echo "Quels modules souhaitez-vous installer ?"
 options=(
-  "Core / General (Zen, Simplenote, Kitty, Nushell, Starship, CLI tools, Apps...)"
+  "Core / General (Zen, Kitty, Nushell, Starship, CLI tools, Apps...)"
   "Dev / SecOps (Zed, Python+pipx, Node, Rust, Podman, K3d, Helm, Azure, Trivy, K9s...)"
   "Gaming (Steam via RPM Fusion pour les libs 32 bits Nvidia, Discord)"
   "Corporate (Teams for Linux Electron)"
@@ -94,7 +113,6 @@ if [ "${selected[0]}" -eq 1 ]; then
   # Applications graphiques via Flathub
   flatpak install -y flathub \
     app.zen_browser.zen \
-    com.simplenote.Simplenote \
     io.github.brunofin.Cohesion \
     com.spotify.Client \
     org.audacityteam.Audacity \
@@ -124,7 +142,8 @@ if [ "${selected[1]}" -eq 1 ]; then
   echo -e "\n--- Installation du module DEV / SECOPS ---"
 
   # Outils natifs + Python & pipx
-  sudo dnf install -y git python3 python3-pip pipx podman podman-compose nodejs npm rust cargo
+  sudo dnf install -y git python3 python3-pip pipx podman podman-compose nodejs npm rust cargo \
+    gcc gcc-c++ make cmake gdb
   pipx ensurepath
 
   # Client API Bruno (Flathub)
@@ -133,22 +152,8 @@ if [ "${selected[1]}" -eq 1 ]; then
   # Éditeur Zed (script officiel Linux)
   curl -f https://zed.dev/install.sh | sh
 
-  # Zed : indentation sur 2 espaces (ne touche pas à une config existante)
-  mkdir -p ~/.config/zed
-  if [ ! -f ~/.config/zed/settings.json ]; then
-    cat << 'EOF' > ~/.config/zed/settings.json
-{
-  "tab_size": 2,
-  "hard_tabs": false,
-  "languages": {
-    "Python": { "tab_size": 2, "hard_tabs": false },
-    "Rust": { "tab_size": 2, "hard_tabs": false }
-  }
-}
-EOF
-  else
-    echo "[!] ~/.config/zed/settings.json existe déjà : ajoutez-y \"tab_size\": 2 à la main."
-  fi
+  # Zed : config versionnée dans dotfiles/zed
+  install_dotfile zed/settings.json ~/.config/zed/settings.json
 
   # Outils DevOps / SecOps via Brew
   brew install terraform tflint kubectl k3d helm helmfile azure-cli trivy k9s stern

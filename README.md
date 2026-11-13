@@ -15,10 +15,13 @@ clover/
 │   └── drainda.ps1      # Windows (Scoop + WinGet + Unbloat)
 ├── dispelda/
 │   └── dispelda.sh      # Fedora Everything (DNF + Flatpak + Brew + Wayland)
+├── dotfiles/            # Une config par application, copiée par les scripts
+│   └── zed/
+│       └── settings.json
 └── README.md
 ```
 
-Les dossiers `dotfiles/`, `keybinds/`, `wallpapers/` et `scripts/` mentionnés plus bas sont prévus mais pas encore créés.
+`dotfiles/` est la source de vérité des configs : les scripts y piochent ce dont ils ont besoin, une application par dossier. Pour l'instant, il ne contient que Zed. Les dossiers `keybinds/`, `wallpapers/` et `scripts/` mentionnés plus bas sont prévus mais pas encore créés.
 
 ## Déploiement, de zéro à opérationnel
 
@@ -59,6 +62,11 @@ Le lancement normal :
 ```powershell
 .\drainda\drainda.ps1
 ```
+
+Ce que le script ajoute côté Windows, au-delà des applis :
+
+- **Visual C++ Redistributable** (`Microsoft.VCRedist.2015+.x64` via WinGet) : sans lui, Rio et d'autres programmes plantent avec « MSVCP140.dll introuvable ». L'installeur demande la validation UAC.
+- **Fichiers de config** générés (GlazeWM, Rio, Nushell) écrits en UTF-8 sans BOM. Windows PowerShell 5.1 en ajoute un par défaut, et des parseurs stricts comme celui de GlazeWM s'y cassent.
 
 À la fin, le script affiche la liste des paquets qui ont échoué, s'il y en a. Certains installeurs demandent des droits admin (ASIO4ALL, Podman Desktop) : relance-les à la main dans ce cas.
 
@@ -101,7 +109,7 @@ Les scripts écrivent eux-mêmes ces raccourcis dans la config de GlazeWM (Windo
 
 Sous Windows, `Super + T`, `Super + R` et `Super + [1-9]` ont déjà un sens (barre des tâches, fenêtre Exécuter). GlazeWM les intercepte tant qu'il tourne ; s'il est fermé, Windows reprend la main.
 
-Zed est réglé sur une indentation de 2 espaces, y compris pour Python et Rust qui utilisent 4 par défaut. Les scripts ne créent `settings.json` que s'il n'existe pas, pour ne pas écraser ta config. S'il est déjà là, ajoute-y `"tab_size": 2` toi-même.
+La config de Zed (`dotfiles/zed/settings.json`) est copiée par les deux scripts. Si un `settings.json` différent existe déjà, il est sauvegardé à côté en `settings.json.bak-<date>` avant d'être remplacé. L'indentation est à `tab_size: 2` avec `hard_tabs: true` (des tabulations d'une largeur de 2).
 
 ### Étape 4 : les fonds d'écran
 
@@ -147,6 +155,15 @@ Pour une Nvidia, le script ajoute aussi les libs 32 bits pour Steam, `nvidia-drm
 Niri a aussi des raccourcis de navigation : `Super + flèches` pour passer d'une colonne ou d'une fenêtre à l'autre, `Super + Shift + flèches` pour les déplacer, `Super + F` pour maximiser, `Print` pour les captures d'écran. Niri et Noctalia ne sont dans les dépôts officiels qu'à partir de Fedora 44 ; en dessous, le script saute cette étape.
 
 ### Dépannage
+
+Windows :
+
+| Symptôme | Piste |
+| --- | --- |
+| Rio ne s'ouvre pas, « MSVCP140.dll introuvable » | Installe le runtime : `winget install Microsoft.VCRedist.2015+.x64` |
+| GlazeWM dit que la config est invalide | Vérifie que le fichier est en UTF-8 sans BOM, puis relance le script (il sauvegarde l'ancienne config dans `~/.glzr/backups/`) |
+
+Fedora :
 
 | Symptôme | Piste |
 | --- | --- |
