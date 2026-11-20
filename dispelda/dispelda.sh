@@ -33,37 +33,42 @@ install_dotfile() {
   echo "[*] Config appliquée : $target"
 }
 
-# Installe Zed. Le script officiel télécharge depuis cloud.zed.dev, qui renvoie
-# parfois des erreurs 500 : dans ce cas on prend la même archive sur GitHub.
-install_zed() {
-  if [ -x "$HOME/.local/bin/zed" ] || command -v zed > /dev/null 2>&1; then
-    echo "[*] Zed est déjà installé."
-    return 0
-  fi
-  if curl -fsSL https://zed.dev/install.sh | sh; then
-    return 0
-  fi
-
-  echo "[!] Le script officiel de Zed a échoué : repli sur l'archive GitHub..."
-  local arch tmp
-  arch="$(uname -m)"
+# Installe un binaire depuis la dernière release GitHub dans ~/.local/bin.
+# Usage : github_bin <owner/repo> <binaire> <nom de l'archive>
+# Dans le nom : @TAG@ (v1.2.3), @VER@ (1.2.3) et @ARCH@ (amd64 ou arm64) sont remplacés.
+# Si l'archive n'a pas d'extension .tar.gz/.zip, c'est le binaire lui-même.
+github_bin() {
+  local repo="$1" bin="$2" pattern="$3" arch tag file tmp
+  case "$(uname -m)" in
+    x86_64)  arch="amd64" ;;
+    aarch64) arch="arm64" ;;
+    *) echo "[!] Architecture non gérée pour $bin"; return 1 ;;
+  esac
+  tag="$(curl -fsIL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" | sed 's|.*/tag/||')" || return 1
+  [ -n "$tag" ] || return 1
+  file="${pattern//@TAG@/$tag}"
+  file="${file//@VER@/${tag#v}}"
+  file="${file//@ARCH@/$arch}"
   tmp="$(mktemp -d)"
-  curl -fL -o "$tmp/zed.tar.gz" \
-    "https://github.com/zed-industries/zed/releases/latest/download/zed-linux-${arch}.tar.gz"
-  rm -rf "$HOME/.local/zed.app"
-  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
-  tar -xzf "$tmp/zed.tar.gz" -C "$HOME/.local/"
+  if ! curl -fL -o "$tmp/$file" "https://github.com/$repo/releases/download/$tag/$file"; then
+    rm -rf "$tmp"; return 1
+  fi
+  case "$file" in
+    *.tar.gz) tar -xzf "$tmp/$file" -C "$tmp" "$bin" || { rm -rf "$tmp"; return 1; } ;;
+    *.zip)    unzip -oq "$tmp/$file" "$bin" -d "$tmp" || { rm -rf "$tmp"; return 1; } ;;
+    *)        mv "$tmp/$file" "$tmp/$bin" ;;
+  esac
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$tmp/$bin" "$HOME/.local/bin/$bin" || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
-  ln -sf "$HOME/.local/zed.app/bin/zed" "$HOME/.local/bin/zed"
-  cp "$HOME/.local/zed.app/share/applications/dev.zed.Zed.desktop" "$HOME/.local/share/applications/dev.zed.Zed.desktop"
-  sed -i "s|Icon=zed|Icon=$HOME/.local/zed.app/share/icons/hicolor/512x512/apps/zed.png|g; s|Exec=zed|Exec=$HOME/.local/zed.app/bin/zed|g" \
-    "$HOME/.local/share/applications/dev.zed.Zed.desktop"
+  echo "[*] $bin $tag installé dans ~/.local/bin"
 }
 
 clear
 echo "=== CONFIGURATION INITIALE FEDORA EVERYTHING ==="
 
-# 0. Prérequis système (Dépôts RPM Fusion, Flathub & Homebrew)
+# 0. Prérequis système (Dépôts RPM Fusion & Flathub)
+# Ordre de préférence pour tout installer : dnf (dépôts Fedora, RPM Fusion, COPR) puis Flatpak.
 echo "[*] Mise à jour initiale et activation de RPM Fusion (free + nonfree) & Flathub..."
 sudo dnf upgrade --refresh -y
 sudo dnf install -y dnf-plugins-core curl wget git tar unzip flatpak bash-completion
@@ -75,17 +80,6 @@ sudo dnf install -y \
 
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
-if ! command -v brew &> /dev/null && [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
-  # Déjà installé (relance du script) mais pas encore dans le PATH de cette session
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
-
-if ! command -v brew &> /dev/null; then
-  echo "[*] Installation de Homebrew (pour les outils CLI récents)..."
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-fi
-
 # ==============================================================================
 # MENU DE SÉLECTION DES MODULES
 # ==============================================================================
@@ -93,7 +87,7 @@ echo ""
 echo "Quels modules souhaitez-vous installer ?"
 options=(
   "Core / General (Zen, Kitty, Nushell, Starship, CLI tools, Apps...)"
-  "Dev / SecOps (Zed, Python+pipx, Node, Rust, Podman, K3d, Helm, Azure, Trivy, K9s...)"
+  "Dev / SecOps (Zed, Python+pipx, Node, Rust, Podman, OpenTofu, Helm, Azure, Trivy, K9s...)"
   "Gaming (Steam via RPM Fusion pour les libs 32 bits Nvidia, Discord)"
   "Corporate (Teams for Linux Electron)"
   "Drivers (détection auto : Nvidia selon la série + Secure Boot, firmwares Wi-Fi/Bluetooth Intel)"
@@ -163,35 +157,37 @@ if [ "${selected[0]}" -eq 1 ]; then
   rm -rf "$nerd_tmp"
   fc-cache -f
 
-  # Shell Nushell, Prompt Starship & Outils CLI modernes
-  brew install nushell starship ripgrep bat lazygit
+  # Shell Nushell & outils CLI modernes (dépôts Fedora)
+  sudo dnf install -y nushell ripgrep bat lazygit
+  # Applis disponibles en dnf (Fedora) : VLC, Audacity, PeaZip
+  sudo dnf install -y vlc audacity peazip-qt6
+  # Starship n'est pas dans les dépôts Fedora : COPR atim/starship
+  sudo dnf copr enable -y atim/starship
+  sudo dnf install -y starship
 
   # Applications graphiques via Flathub
   flatpak install -y flathub \
     app.zen_browser.zen \
     io.github.brunofin.Cohesion \
     com.spotify.Client \
-    org.audacityteam.Audacity \
     org.onlyoffice.desktopeditors \
     com.jgraph.drawio.desktop \
-    org.localsend.localsend_app \
-    org.videolan.VLC \
-    io.github.peazip.PeaZip
+    org.localsend.localsend_app
 
   # Configuration basique : Kitty -> Nushell -> Starship
   mkdir -p ~/.config/kitty ~/.config/nushell ~/.cache/starship
   cat << 'EOF' > ~/.config/kitty/kitty.conf
-shell /home/linuxbrew/.linuxbrew/bin/nu
+shell /usr/bin/nu
 font_family JetBrainsMono Nerd Font
 font_size 11.5
 EOF
 
-  /home/linuxbrew/.linuxbrew/bin/starship init nu > ~/.cache/starship/init.nu
+  starship init nu > ~/.cache/starship/init.nu
   # Évite de dupliquer ces lignes si le script est relancé
   if ! grep -q "starship/init.nu" ~/.config/nushell/config.nu 2>/dev/null; then
     cat << 'EOF' >> ~/.config/nushell/config.nu
 $env.config.show_banner = false
-$env.PATH = ($env.PATH | split row (char esep) | prepend '/home/linuxbrew/.linuxbrew/bin' | prepend $"($env.HOME)/.local/bin")
+$env.PATH = ($env.PATH | split row (char esep) | prepend $"($env.HOME)/.local/bin")
 use ~/.cache/starship/init.nu
 EOF
   fi
@@ -208,44 +204,20 @@ if [ "${selected[1]}" -eq 1 ]; then
   # Client API Bruno (Flathub)
   flatpak install -y flathub com.usebruno.Bruno
 
-  # Éditeur Zed (script officiel, avec repli sur l'archive GitHub si leur serveur est en panne)
-  install_zed
+  # Éditeur Zed : absent des dépôts Fedora, donc Flatpak. Sa config vit dans le dossier de l'appli.
+  flatpak install -y flathub dev.zed.Zed
+  install_dotfile zed/settings.json ~/.var/app/dev.zed.Zed/config/zed/settings.json
 
-  # Zed : config versionnée dans dotfiles/zed
-  install_dotfile zed/settings.json ~/.config/zed/settings.json
+  # Outils DevOps / SecOps, tous dans les dépôts Fedora :
+  # kubernetes-client = kubectl / opentofu = remplaçant libre de terraform (commande : tofu)
+  sudo dnf install -y kubernetes-client helm trivy k9s opentofu azure-cli
 
-  # Outils DevOps / SecOps via Brew (un par un : une formule absente ne bloque pas les autres)
-  # - terraform et tflint ne sont plus dans homebrew-core : tap HashiCorp / archive GitHub (plus bas)
-  # - azure-cli n'est plus dans homebrew-core : dépôt RPM Microsoft (plus bas)
-  # - kubectl est un alias de kubernetes-cli
-  for formula in hashicorp/tap/terraform kubernetes-cli k3d helm helmfile trivy k9s stern; do
-    brew install "$formula" || FAILED+=("brew : $formula")
-  done
-
-  # tflint : binaire de la dernière release GitHub, dans ~/.local/bin
-  case "$(uname -m)" in
-    x86_64)  tflint_arch="amd64" ;;
-    aarch64) tflint_arch="arm64" ;;
-    *)       tflint_arch="" ;;
-  esac
-  if [ -n "$tflint_arch" ]; then
-    tflint_tmp="$(mktemp -d)"
-    if curl -fL -o "$tflint_tmp/tflint.zip" \
-        "https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${tflint_arch}.zip" \
-      && unzip -oq "$tflint_tmp/tflint.zip" tflint -d "$tflint_tmp" \
-      && mkdir -p ~/.local/bin && install -m 0755 "$tflint_tmp/tflint" ~/.local/bin/tflint; then
-      echo "[*] tflint installé dans ~/.local/bin"
-    else
-      FAILED+=("tflint")
-    fi
-    rm -rf "$tflint_tmp"
-  fi
-
-  # Azure CLI : dépôt RPM officiel Microsoft (celui de RHEL 9 sert aussi à Fedora)
-  sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
-  sudo dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm \
-    || echo "[i] Dépôt Microsoft déjà configuré."
-  sudo dnf install -y azure-cli || FAILED+=("azure-cli")
+  # Pas de paquet dnf ni Flatpak pour ces outils (ni dans un COPR actif pour Fedora 45) :
+  # derniers binaires officiels des releases GitHub, dans ~/.local/bin
+  github_bin k3d-io/k3d k3d "k3d-linux-@ARCH@" || FAILED+=("k3d")
+  github_bin helmfile/helmfile helmfile "helmfile_@VER@_linux_@ARCH@.tar.gz" || FAILED+=("helmfile")
+  github_bin stern/stern stern "stern_@VER@_linux_@ARCH@.tar.gz" || FAILED+=("stern")
+  github_bin terraform-linters/tflint tflint "tflint_linux_@ARCH@.zip" || FAILED+=("tflint")
 
   # Claude Code CLI : installé dans ~/.local (le préfixe global de Fedora, /usr, demanderait root)
   npm install -g --prefix ~/.local @anthropic-ai/claude-code || FAILED+=("claude-code")
@@ -255,8 +227,7 @@ if [ "${selected[2]}" -eq 1 ]; then
   echo -e "\n--- Installation du module GAMING ---"
   # Steam en RPM (RPM Fusion nonfree) : le Flatpak Steam a besoin d'un runtime
   # Nvidia GL assorti, peu fiable avec la branche legacy 580xx.
-  sudo dnf install -y steam
-  flatpak install -y flathub com.discordapp.Discord
+  sudo dnf install -y steam discord
 fi
 
 if [ "${selected[3]}" -eq 1 ]; then

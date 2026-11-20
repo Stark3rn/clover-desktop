@@ -14,7 +14,7 @@ clover/
 ├── drainda/
 │   └── drainda.ps1      # Windows (Scoop + WinGet + Unbloat)
 ├── dispelda/
-│   └── dispelda.sh      # Fedora Everything (DNF + Flatpak + Brew + Wayland)
+│   └── dispelda.sh      # Fedora Everything (DNF + Flatpak + Wayland)
 ├── dotfiles/            # Une config par application, copiée par les scripts
 │   └── zed/
 │       └── settings.json
@@ -126,8 +126,31 @@ La config de Zed (`dotfiles/zed/settings.json`) est copiée par les deux scripts
 1. **Alias Nushell** (`aliases.nu`) : à sourcer dans `config.nu` pour avoir les mêmes commandes partout (`k` pour kubectl, `tf` pour terraform, `lg` pour lazygit, `cat` vers bat, etc.).
 2. **Scripts utilitaires** : nettoyage rapide des conteneurs Podman et des clusters k3d locaux, audit des programmes lancés au démarrage sous Windows (Autoruns ou PowerShell).
 3. **Automatisation** :
-   - Linux : crontab ou timers systemd utilisateur pour mettre à jour brew et flatpak et nettoyer le cache.
+   - Linux : crontab ou timers systemd utilisateur pour mettre à jour dnf et flatpak et nettoyer le cache.
    - Windows : une tâche planifiée hebdomadaire qui lance `scoop update *` en silence.
+
+## D'où viennent les paquets sur Fedora
+
+Pas de Homebrew. L'ordre de préférence est dnf (dépôts Fedora, RPM Fusion, puis COPR en dernier recours), puis Flatpak. Chaque nom de paquet a été vérifié contre les dépôts de Fedora 45.
+
+| Outil | Source |
+| --- | --- |
+| Kitty, Nushell, ripgrep, bat, lazygit, Helm, Trivy, K9s, Azure CLI, Podman, compilateurs | dnf (Fedora) |
+| VLC, Audacity, PeaZip (`peazip-qt6`) | dnf (Fedora) |
+| Discord, Steam | dnf (RPM Fusion nonfree) |
+| `kubectl` | dnf (`kubernetes-client`) |
+| Terraform | remplacé par OpenTofu en dnf (commande `tofu`) : Terraform n'est plus distribué par Fedora, et le dépôt HashiCorp n'a pas de Fedora 45 |
+| Starship | dnf, COPR `atim/starship` |
+| Hyprland, hypridle, hyprlock | dnf, COPR `nikromen/hyprland` |
+| Quickshell (Caelestia) | dnf, COPR `errornointernet/quickshell` |
+| Niri, Noctalia, xwayland-satellite | dnf (Fedora) |
+| Zed, Bruno, Zen, Spotify, OnlyOffice, draw.io, LocalSend, Cohesion, Teams for Linux | Flatpak |
+
+Zed en Flatpak est isolé du système : ses outils intégrés ne voient pas les compilateurs ni les outils installés avec dnf. Sa config se trouve dans `~/.var/app/dev.zed.Zed/config/zed/settings.json`.
+
+Quatre outils n'ont ni paquet dnf ni Flatpak : `k3d`, `helmfile`, `stern` et `tflint`. Le script télécharge leur dernier binaire depuis les releases GitHub officielles et le place dans `~/.local/bin`. Ces binaires ne se mettent pas à jour tout seuls : relance le script pour récupérer les nouvelles versions.
+
+Deux autres exceptions hors dnf et Flatpak : la police JetBrainsMono Nerd Font (archive de release GitHub, aucun paquet Fedora ne la fournit) et Claude Code (`npm`, installé dans `~/.local`).
 
 ## Ce que le script Fedora règle pour que le bureau marche tout seul
 
