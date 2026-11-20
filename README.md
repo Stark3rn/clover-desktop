@@ -107,6 +107,11 @@ Les scripts écrivent eux-mêmes ces raccourcis dans la config de GlazeWM (Windo
 | `Super + Shift + [1-9]` | Envoyer la fenêtre active vers l'espace de travail 1 à 9 |
 | `Super + Shift + E` | Quitter la session (GlazeWM, Hyprland ou Niri) |
 
+Sur Fedora, le clavier est en AZERTY partout (console, écran de connexion SDDM, Hyprland et Niri). Les chiffres demandent Shift sur AZERTY, donc les raccourcis d'espaces de travail sont écrits autrement :
+
+- **Hyprland** utilise les codes de touches (`code:10` à `code:18`), qui ne dépendent pas de la disposition. Tu appuies simplement sur `Super + &`, `é`, `"`, etc., sans Shift.
+- **Niri** compare le symbole de la touche sans Shift : les raccourcis sont écrits `Mod+ampersand`, `Mod+eacute`, `Mod+quotedbl`, `Mod+apostrophe`, `Mod+parenleft`, `Mod+minus`, `Mod+egrave`, `Mod+underscore` et `Mod+ccedilla`. Si l'un d'eux ne répond pas, lance `wev` pour lire le nom exact de la touche.
+
 Sous Windows, `Super + T`, `Super + R` et `Super + [1-9]` ont déjà un sens (barre des tâches, fenêtre Exécuter). GlazeWM les intercepte tant qu'il tourne ; s'il est fermé, Windows reprend la main.
 
 La config de Zed (`dotfiles/zed/settings.json`) est copiée par les deux scripts. Si un `settings.json` différent existe déjà, il est sauvegardé à côté en `settings.json.bak-<date>` avant d'être remplacé. L'indentation est à `tab_size: 2` avec `hard_tabs: true` (des tabulations d'une largeur de 2).
@@ -149,7 +154,9 @@ Pour une Nvidia, le script ajoute aussi les libs 32 bits pour Steam, `nvidia-drm
 | Sélecteurs de fichiers | `xdg-desktop-portal-gtk`. |
 | Mots de passe et privilèges | `gnome-keyring` et un agent polkit, lancés au démarrage de la session. |
 | Noctalia | Démarrée par niri, avec les raccourcis du panneau de contrôle, des réglages et du volume, et une règle pour ouvrir ses fenêtres en flottant. |
-| Écran de connexion | SDDM, avec le choix entre niri et Hyprland. |
+| Hyprland et Niri | Au choix, ou les deux à la fois : à la question du script, tape `1`, `2` ou `1 2` (Entrée = les deux). SDDM te laisse choisir la session au login. |
+| Écran de connexion | SDDM avec son greeter X11, en AZERTY (`localectl set-x11-keymap fr`). La console (TTY) passe aussi en AZERTY. |
+| Machine virtuelle | Détectée automatiquement. Le script installe alors `open-vm-tools` (sous VMware), `mesa-demos` pour `glxinfo`, `foot` comme terminal de secours (`Super + Shift + T`) et règle le curseur logiciel dans Hyprland. |
 | Polices | Noto (texte et emoji) et JetBrains Mono. |
 
 Niri a aussi des raccourcis de navigation : `Super + flèches` pour passer d'une colonne ou d'une fenêtre à l'autre, `Super + Shift + flèches` pour les déplacer, `Super + F` pour maximiser, `Print` pour les captures d'écran. Niri et Noctalia ne sont dans les dépôts officiels qu'à partir de Fedora 44 ; en dessous, le script saute cette étape.
@@ -173,6 +180,36 @@ Fedora :
 | Paquets 580xx introuvables | Le dépôt `rpmfusion-nonfree` complet n'est pas activé |
 | Pas de Wi-Fi | `sudo dmesg \| grep iwlwifi` : une erreur de firmware veut dire que `iwlwifi-mvm-firmware` manque |
 | Deux barres à l'écran | Une ligne `spawn-at-startup "waybar"` traîne dans la config niri |
+| Kitty ne se lance pas dans une VM | Voir la section VMware ci-dessous |
+
+### Fedora dans VMware Workstation
+
+Dans une VM, Fedora ne voit pas ta carte Nvidia : VMware présente une carte virtuelle (« VMware SVGA ») et le script n'installe donc aucun driver Nvidia, ce qui est normal. Ta RTX 5060 ne sert qu'à VMware, qui traduit la 3D de l'invité vers Windows.
+
+Réglages côté VMware (VM éteinte), dans *Paramètres de la machine virtuelle*, onglet *Affichage* :
+
+- Coche **Accélérer les graphismes 3D**. C'est le point le plus important : sans lui, il n'y a pas de pilote 3D et les applis OpenGL comme Kitty ont du mal à démarrer.
+- Monte la **mémoire graphique** au maximum proposé.
+- Donne à la VM au moins 4 cœurs et 8 Go de RAM.
+- Garde VMware Workstation et le pilote Nvidia de Windows à jour (une RTX 50 demande des versions récentes des deux).
+
+Dans Fedora, vérifie que la 3D est active :
+
+```sh
+glxinfo -B | grep -E "OpenGL renderer|OpenGL version"
+```
+
+« SVGA3D » ou « vmwgfx » dans le renderer est bon signe. « llvmpipe » signifie que la 3D est émulée par le processeur : relis les réglages ci-dessus.
+
+Si Kitty ne s'ouvre pas dans Hyprland, ouvre une console (`Ctrl + Alt + F3`), connecte-toi, puis lance Kitty depuis la session pour lire l'erreur :
+
+```sh
+HYPRLAND_INSTANCE_SIGNATURE=$(ls /run/user/$(id -u)/hypr | head -n1) \
+  hyprctl dispatch exec 'sh -c "kitty > /tmp/kitty.log 2>&1"'
+cat /tmp/kitty.log
+```
+
+En attendant, `Super + Shift + T` ouvre `foot`, un terminal qui n'a pas besoin d'OpenGL.
 
 ### Réinitialiser Windows sans perdre Fedora
 

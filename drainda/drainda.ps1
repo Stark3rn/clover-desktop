@@ -92,6 +92,7 @@ scoop install git 2>$null
 scoop bucket add extras 2>$null
 scoop bucket add versions 2>$null
 scoop bucket add nerd-fonts 2>$null
+scoop bucket add games 2>$null
 
 # ==============================================================================
 # MENU DE SÉLECTION DES MODULES
@@ -162,7 +163,7 @@ if ($modules[1].Selected) {
 
 if ($modules[2].Selected) {
     Write-Host "`n--- Installation du module GAMING ---" -ForegroundColor Yellow
-    Install-ScoopApps @("extras/steam", "extras/discord")
+    Install-ScoopApps @("games/steam", "extras/discord")
 }
 
 if ($modules[3].Selected) {
@@ -172,8 +173,8 @@ if ($modules[3].Selected) {
 
 if ($modules[4].Selected) {
     Write-Host "`n--- Installation du module MUSIC ---" -ForegroundColor Yellow
-    # L'installeur d'ASIO4ALL peut réclamer l'élévation ; en cas d'échec, voir le récapitulatif final
-    Install-ScoopApps @("extras/asio4all")
+    # ASIO4ALL n'est plus dans les buckets Scoop utilisables sans admin : WinGet (UAC si besoin)
+    Install-WingetApp "MichaelTippach.ASIO4ALL"
 }
 
 if ($modules[5].Selected) {

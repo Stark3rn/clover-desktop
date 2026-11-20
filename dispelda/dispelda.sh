@@ -6,6 +6,9 @@ set -e
 # Cible : Fedora 44+ (niri et Noctalia sont dans les dépôts officiels)
 # ==============================================================================
 
+# Éléments qui ont échoué, listés à la fin sans interrompre le script
+FAILED=()
+
 if [ "$EUID" -eq 0 ]; then
   echo "Ne lancez pas ce script en root (sudo). Lancez-le en tant qu'utilisateur normal."
   exit 1
@@ -72,6 +75,11 @@ sudo dnf install -y \
 
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
+if ! command -v brew &> /dev/null && [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+  # Déjà installé (relance du script) mais pas encore dans le PATH de cette session
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+fi
+
 if ! command -v brew &> /dev/null; then
   echo "[*] Installation de Homebrew (pour les outils CLI récents)..."
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -89,7 +97,7 @@ options=(
   "Gaming (Steam via RPM Fusion pour les libs 32 bits Nvidia, Discord)"
   "Corporate (Teams for Linux Electron)"
   "Drivers (détection auto : Nvidia selon la série + Secure Boot, firmwares Wi-Fi/Bluetooth Intel)"
-  "Ricing Wayland (Choix entre Hyprland+Caelestia OU Niri+Noctalia + socle minimal)"
+  "Ricing Wayland (Hyprland+Caelestia et/ou Niri+Noctalia, SDDM, clavier AZERTY, socle minimal)"
 )
 selected=(1 1 0 0 0 1)
 
@@ -110,14 +118,31 @@ if [ -n "$choix" ]; then
   done
 fi
 
-# Sous-choix pour le module Ricing si activé
-ricing_choice=""
+# Sous-choix pour le module Ricing si activé : un ou plusieurs environnements
+want_hypr=0
+want_niri=0
 if [ "${selected[5]}" -eq 1 ]; then
   echo ""
-  echo "Quel compositeur Wayland souhaitez-vous pour le Ricing ?"
+  echo "Quels environnements Wayland souhaitez-vous installer ? (les deux sont possibles)"
   echo "1. Hyprland + Caelestia (Quickshell)"
   echo "2. Niri + Noctalia Shell"
-  read -rp "Votre choix (1 ou 2) : " ricing_choice
+  read -rp "Votre choix (1, 2, ou 1 2 pour les deux ; Entrée = les deux) : " ricing_choice
+  ricing_choice="${ricing_choice:-1 2}"
+  if [[ "$ricing_choice" == *1* ]]; then want_hypr=1; fi
+  if [[ "$ricing_choice" == *2* ]]; then want_niri=1; fi
+  if [ "$want_hypr" -eq 0 ] && [ "$want_niri" -eq 0 ]; then
+    echo "[!] Choix non reconnu : Hyprland et Niri seront tous deux installés."
+    want_hypr=1
+    want_niri=1
+  fi
+fi
+
+# Détection d'une machine virtuelle (VMware, VirtualBox, KVM...)
+is_vm=0
+virt="$(systemd-detect-virt 2>/dev/null || true)"
+if [ -n "$virt" ] && [ "$virt" != "none" ]; then
+  is_vm=1
+  echo "[*] Machine virtuelle détectée : $virt"
 fi
 
 # ==============================================================================
@@ -189,11 +214,41 @@ if [ "${selected[1]}" -eq 1 ]; then
   # Zed : config versionnée dans dotfiles/zed
   install_dotfile zed/settings.json ~/.config/zed/settings.json
 
-  # Outils DevOps / SecOps via Brew
-  brew install terraform tflint kubectl k3d helm helmfile azure-cli trivy k9s stern
+  # Outils DevOps / SecOps via Brew (un par un : une formule absente ne bloque pas les autres)
+  # - terraform et tflint ne sont plus dans homebrew-core : tap HashiCorp / archive GitHub (plus bas)
+  # - azure-cli n'est plus dans homebrew-core : dépôt RPM Microsoft (plus bas)
+  # - kubectl est un alias de kubernetes-cli
+  for formula in hashicorp/tap/terraform kubernetes-cli k3d helm helmfile trivy k9s stern; do
+    brew install "$formula" || FAILED+=("brew : $formula")
+  done
 
-  # Claude Code CLI
-  npm install -g @anthropic-ai/claude-code
+  # tflint : binaire de la dernière release GitHub, dans ~/.local/bin
+  case "$(uname -m)" in
+    x86_64)  tflint_arch="amd64" ;;
+    aarch64) tflint_arch="arm64" ;;
+    *)       tflint_arch="" ;;
+  esac
+  if [ -n "$tflint_arch" ]; then
+    tflint_tmp="$(mktemp -d)"
+    if curl -fL -o "$tflint_tmp/tflint.zip" \
+        "https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_${tflint_arch}.zip" \
+      && unzip -oq "$tflint_tmp/tflint.zip" tflint -d "$tflint_tmp" \
+      && mkdir -p ~/.local/bin && install -m 0755 "$tflint_tmp/tflint" ~/.local/bin/tflint; then
+      echo "[*] tflint installé dans ~/.local/bin"
+    else
+      FAILED+=("tflint")
+    fi
+    rm -rf "$tflint_tmp"
+  fi
+
+  # Azure CLI : dépôt RPM officiel Microsoft (celui de RHEL 9 sert aussi à Fedora)
+  sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+  sudo dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm \
+    || echo "[i] Dépôt Microsoft déjà configuré."
+  sudo dnf install -y azure-cli || FAILED+=("azure-cli")
+
+  # Claude Code CLI : installé dans ~/.local (le préfixe global de Fedora, /usr, demanderait root)
+  npm install -g --prefix ~/.local @anthropic-ai/claude-code || FAILED+=("claude-code")
 fi
 
 if [ "${selected[2]}" -eq 1 ]; then
@@ -320,25 +375,47 @@ EOF
   fi
 fi
 
+if [ "$is_vm" -eq 1 ]; then
+  echo -e "\n--- Outils pour machine virtuelle ---"
+  # Mesa (pilote 3D virtuel vmwgfx), diagnostic OpenGL (glxinfo), terminal de secours sans OpenGL (foot)
+  sudo dnf install -y mesa-dri-drivers mesa-demos foot
+  if [ "$virt" = "vmware" ]; then
+    sudo dnf install -y open-vm-tools open-vm-tools-desktop
+    sudo systemctl enable --now vmtoolsd || true
+  fi
+fi
+
 if [ "${selected[5]}" -eq 1 ]; then
   echo -e "\n--- Installation du socle Wayland minimal (depuis Fedora Everything) ---"
   # Audio (PipeWire), Réseau + Wi-Fi + Bluetooth, Polkit, Trousseau, Portails XDG,
-  # Polices, Display Manager (SDDM)
+  # Polices, Display Manager (SDDM, greeter X11)
   sudo dnf install -y \
     pipewire pipewire-pulseaudio pipewire-alsa wireplumber \
     NetworkManager NetworkManager-wifi network-manager-applet bluez \
     polkit xfce-polkit gnome-keyring \
     xdg-desktop-portal xdg-desktop-portal-gtk \
     google-noto-sans-fonts google-noto-color-emoji-fonts jetbrains-mono-fonts-all \
-    wl-clipboard grim slurp brightnessctl pamixer \
-    sddm
+    wl-clipboard grim slurp brightnessctl pamixer wev \
+    sddm sddm-x11
+
+  # Clavier AZERTY dès l'installation : console (TTY) et configuration X11,
+  # que lit l'écran de connexion SDDM. Hyprland et Niri sont réglés plus bas.
+  sudo localectl set-keymap fr
+  sudo localectl set-x11-keymap fr pc105
 
   sudo systemctl enable NetworkManager bluetooth sddm
   sudo systemctl set-default graphical.target
 
+  # Variables Nvidia pour Hyprland : seulement si une vraie carte Nvidia est utilisée
+  # (dans une VM, elles casseraient OpenGL)
+  use_nvidia_env=0
+  if lspci | grep -qi 'NVIDIA' && { [ -n "${nv_pkgs:-}" ] || rpm -qa 'akmod-nvidia*' | grep -q .; }; then
+    use_nvidia_env=1
+  fi
+
   mkdir -p ~/.config/quickshell
 
-  if [ "$ricing_choice" == "1" ]; then
+  if [ "$want_hypr" -eq 1 ]; then
     echo -e "\n--- Installation de HYPRLAND + CAELESTIA ---"
     sudo dnf copr enable -y errornointernet/quickshell
     sudo dnf install -y quickshell fuzzel
@@ -355,16 +432,19 @@ if [ "${selected[5]}" -eq 1 ]; then
 
     # Config minimale Hyprland pour lancer Kitty et Caelestia au démarrage
     mkdir -p ~/.config/hypr
-    [ -f ~/.config/hypr/hyprland.conf ] && cp ~/.config/hypr/hyprland.conf ~/.config/hypr/hyprland.conf.bak
-    cat << 'EOF' > ~/.config/hypr/hyprland.conf
+    hypr_conf=~/.config/hypr/hyprland.conf
+    [ -f "$hypr_conf" ] && cp "$hypr_conf" "$hypr_conf.bak"
+    cat << 'EOF2' > "$hypr_conf"
 monitor=,preferred,auto,1
+
 exec-once = /usr/libexec/xfce-polkit
 exec-once = gnome-keyring-daemon --start --components=secrets
 exec-once = qs -c caelestia
 
-# Nvidia (GTX 10xx) sous Wayland
-env = LIBVA_DRIVER_NAME,nvidia
-env = __GLX_VENDOR_LIBRARY_NAME,nvidia
+# Clavier AZERTY
+input {
+    kb_layout = fr
+}
 
 $terminal = kitty
 $menu = fuzzel
@@ -373,15 +453,40 @@ bind = SUPER, T, exec, $terminal
 bind = SUPER, R, exec, $menu
 bind = SUPER, C, killactive,
 bind = SUPER SHIFT, E, exit,
-EOF
+EOF2
 
     # Super + [1-9] : changer d'espace de travail / Super + Shift + [1-9] : y déplacer la fenêtre
+    # On utilise les codes de touches (10 à 18) : sur AZERTY, les chiffres sont en Shift,
+    # les codes fonctionnent quelle que soit la disposition.
     for i in {1..9}; do
-      echo "bind = SUPER, $i, workspace, $i" >> ~/.config/hypr/hyprland.conf
-      echo "bind = SUPER SHIFT, $i, movetoworkspace, $i" >> ~/.config/hypr/hyprland.conf
+      echo "bind = SUPER, code:$((i + 9)), workspace, $i" >> "$hypr_conf"
+      echo "bind = SUPER SHIFT, code:$((i + 9)), movetoworkspace, $i" >> "$hypr_conf"
     done
 
-  elif [ "$ricing_choice" == "2" ]; then
+    if [ "$use_nvidia_env" -eq 1 ]; then
+      cat << 'EOF2' >> "$hypr_conf"
+
+# Nvidia sous Wayland
+env = LIBVA_DRIVER_NAME,nvidia
+env = __GLX_VENDOR_LIBRARY_NAME,nvidia
+EOF2
+    fi
+
+    if [ "$is_vm" -eq 1 ]; then
+      cat << 'EOF2' >> "$hypr_conf"
+
+# Machine virtuelle : curseur logiciel (le curseur matériel disparaît souvent)
+cursor {
+    no_hardware_cursors = true
+}
+
+# Terminal de secours qui n'utilise pas OpenGL (si kitty ne démarre pas)
+bind = SUPER SHIFT, T, exec, foot
+EOF2
+    fi
+  fi
+
+  if [ "$want_niri" -eq 1 ]; then
     echo -e "\n--- Installation de NIRI + NOCTALIA SHELL ---"
     if [ "$(rpm -E %fedora)" -lt 44 ]; then
       echo "[!] niri et noctalia ne sont dans les dépôts officiels qu'à partir de Fedora 44. Étape ignorée."
@@ -391,8 +496,18 @@ EOF
       sudo dnf install -y niri noctalia xwayland-satellite xdg-desktop-portal-gnome
 
       mkdir -p ~/.config/niri
-      [ -f ~/.config/niri/config.kdl ] && cp ~/.config/niri/config.kdl ~/.config/niri/config.kdl.bak
-      cat << 'EOF' > ~/.config/niri/config.kdl
+      niri_conf=~/.config/niri/config.kdl
+      [ -f "$niri_conf" ] && cp "$niri_conf" "$niri_conf.bak"
+      cat << 'EOF2' > "$niri_conf"
+// Clavier AZERTY
+input {
+  keyboard {
+    xkb {
+      layout "fr"
+    }
+  }
+}
+
 // Démarrage : agent polkit, trousseau, shell Noctalia
 // (xwayland-satellite est lancé automatiquement par niri s'il est installé)
 spawn-at-startup "/usr/libexec/xfce-polkit"
@@ -425,7 +540,7 @@ binds {
   XF86AudioLowerVolume { spawn-sh "noctalia msg volume-down"; }
   XF86AudioMute { spawn-sh "noctalia msg volume-mute"; }
 
-  // Navigation
+  // Navigation (Mod+Minus/Equal sont pris par les espaces de travail 6 en AZERTY)
   Mod+Left { focus-column-left; }
   Mod+Right { focus-column-right; }
   Mod+Up { focus-window-up; }
@@ -436,26 +551,41 @@ binds {
   Mod+Shift+Down { move-window-down; }
   Mod+F { maximize-column; }
   Mod+Shift+F { fullscreen-window; }
-  Mod+Minus { set-column-width "-10%"; }
-  Mod+Equal { set-column-width "+10%"; }
+  Mod+Ctrl+Left { set-column-width "-10%"; }
+  Mod+Ctrl+Right { set-column-width "+10%"; }
 
   // Captures d'écran
   Print { screenshot; }
   Ctrl+Print { screenshot-screen; }
   Alt+Print { screenshot-window; }
 
-EOF
+EOF2
 
-      # Mod + [1-9] : changer d'espace de travail / Mod + Shift + [1-9] : y déplacer la fenêtre
+      # Mod + [1-9] / Mod + Shift + [1-9] : niri compare le symbole de la touche SANS Shift.
+      # Sur AZERTY, la rangée des chiffres donne & é " ' ( - è _ ç.
+      azerty_digits=(ampersand eacute quotedbl apostrophe parenleft minus egrave underscore ccedilla)
       for i in {1..9}; do
-        echo "  Mod+$i { focus-workspace $i; }" >> ~/.config/niri/config.kdl
-        echo "  Mod+Shift+$i { move-window-to-workspace $i; }" >> ~/.config/niri/config.kdl
+        key="${azerty_digits[$((i - 1))]}"
+        echo "  Mod+$key { focus-workspace $i; }" >> "$niri_conf"
+        echo "  Mod+Shift+$key { move-window-to-workspace $i; }" >> "$niri_conf"
       done
-      echo "}" >> ~/.config/niri/config.kdl
+
+      if [ "$is_vm" -eq 1 ]; then
+        echo "" >> "$niri_conf"
+        echo "  // Terminal de secours qui n'utilise pas OpenGL (si kitty ne démarre pas)" >> "$niri_conf"
+        echo '  Mod+Shift+T { spawn "foot"; }' >> "$niri_conf"
+      fi
+      echo "}" >> "$niri_conf"
 
       niri validate || echo "[!] La config niri a une erreur : corrigez ~/.config/niri/config.kdl"
     fi
   fi
+fi
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  echo -e "\n=== CERTAINS ÉLÉMENTS ONT ÉCHOUÉ ==="
+  printf '  - %s\n' "${FAILED[@]}"
+  echo "Relance-les à la main ou relance le script (les paquets déjà installés sont ignorés)."
 fi
 
 echo -e "\n=== INSTALLATION FEDORA TERMINÉE ! Redémarrez pour démarrer sur votre session graphique. ==="
