@@ -102,10 +102,14 @@ if [ "${selected[0]}" -eq 1 ]; then
 
   # Terminal Kitty & polices Nerd Fonts
   sudo dnf install -y kitty jetbrains-mono-fonts-all
-  mkdir -p ~/.local/share/fonts
-  curl -fLo ~/.local/share/fonts/JetBrainsMonoNerdFont-Regular.ttf \
-    https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf
-  fc-cache -fv
+  # (l'archive de release est stable, contrairement aux chemins du dépôt qui changent)
+  mkdir -p ~/.local/share/fonts/JetBrainsMonoNerd
+  nerd_tmp="$(mktemp -d)"
+  curl -fL -o "$nerd_tmp/JetBrainsMono.zip" \
+    https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+  unzip -oq "$nerd_tmp/JetBrainsMono.zip" '*.ttf' -d ~/.local/share/fonts/JetBrainsMonoNerd
+  rm -rf "$nerd_tmp"
+  fc-cache -f
 
   # Shell Nushell, Prompt Starship & Outils CLI modernes
   brew install nushell starship ripgrep bat lazygit
