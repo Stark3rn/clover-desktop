@@ -135,11 +135,14 @@ font_size 11.5
 EOF
 
   /home/linuxbrew/.linuxbrew/bin/starship init nu > ~/.cache/starship/init.nu
-  cat << 'EOF' >> ~/.config/nushell/config.nu
+  # Évite de dupliquer ces lignes si le script est relancé
+  if ! grep -q "starship/init.nu" ~/.config/nushell/config.nu 2>/dev/null; then
+    cat << 'EOF' >> ~/.config/nushell/config.nu
 $env.config.show_banner = false
 $env.PATH = ($env.PATH | split row (char esep) | prepend '/home/linuxbrew/.linuxbrew/bin' | prepend $"($env.HOME)/.local/bin")
 use ~/.cache/starship/init.nu
 EOF
+  fi
 fi
 
 if [ "${selected[1]}" -eq 1 ]; then
@@ -312,7 +315,10 @@ if [ "${selected[5]}" -eq 1 ]; then
     echo -e "\n--- Installation de HYPRLAND + CAELESTIA ---"
     sudo dnf copr enable -y errornointernet/quickshell
     sudo dnf install -y quickshell fuzzel
-    sudo dnf copr enable -y solopasha/hyprland
+    # Hyprland n'est plus dans les dépôts officiels Fedora. On utilise nikromen/hyprland
+    # (builds fc43 à rawhide, avec hyprland, hypridle, hyprlock et le portail).
+    # solopasha/hyprland n'a plus que le chroot rawhide : ne marche pas sur une version stable.
+    sudo dnf copr enable -y nikromen/hyprland
     sudo dnf install -y hyprland hypridle hyprlock xdg-desktop-portal-hyprland
 
     # Clonage de Caelestia Shell (prêt pour tes dotfiles)
