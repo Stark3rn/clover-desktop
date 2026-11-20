@@ -30,6 +30,33 @@ install_dotfile() {
   echo "[*] Config appliquée : $target"
 }
 
+# Installe Zed. Le script officiel télécharge depuis cloud.zed.dev, qui renvoie
+# parfois des erreurs 500 : dans ce cas on prend la même archive sur GitHub.
+install_zed() {
+  if [ -x "$HOME/.local/bin/zed" ] || command -v zed > /dev/null 2>&1; then
+    echo "[*] Zed est déjà installé."
+    return 0
+  fi
+  if curl -fsSL https://zed.dev/install.sh | sh; then
+    return 0
+  fi
+
+  echo "[!] Le script officiel de Zed a échoué : repli sur l'archive GitHub..."
+  local arch tmp
+  arch="$(uname -m)"
+  tmp="$(mktemp -d)"
+  curl -fL -o "$tmp/zed.tar.gz" \
+    "https://github.com/zed-industries/zed/releases/latest/download/zed-linux-${arch}.tar.gz"
+  rm -rf "$HOME/.local/zed.app"
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+  tar -xzf "$tmp/zed.tar.gz" -C "$HOME/.local/"
+  rm -rf "$tmp"
+  ln -sf "$HOME/.local/zed.app/bin/zed" "$HOME/.local/bin/zed"
+  cp "$HOME/.local/zed.app/share/applications/dev.zed.Zed.desktop" "$HOME/.local/share/applications/dev.zed.Zed.desktop"
+  sed -i "s|Icon=zed|Icon=$HOME/.local/zed.app/share/icons/hicolor/512x512/apps/zed.png|g; s|Exec=zed|Exec=$HOME/.local/zed.app/bin/zed|g" \
+    "$HOME/.local/share/applications/dev.zed.Zed.desktop"
+}
+
 clear
 echo "=== CONFIGURATION INITIALE FEDORA EVERYTHING ==="
 
@@ -156,8 +183,8 @@ if [ "${selected[1]}" -eq 1 ]; then
   # Client API Bruno (Flathub)
   flatpak install -y flathub com.usebruno.Bruno
 
-  # Éditeur Zed (script officiel Linux)
-  curl -f https://zed.dev/install.sh | sh
+  # Éditeur Zed (script officiel, avec repli sur l'archive GitHub si leur serveur est en panne)
+  install_zed
 
   # Zed : config versionnée dans dotfiles/zed
   install_dotfile zed/settings.json ~/.config/zed/settings.json
